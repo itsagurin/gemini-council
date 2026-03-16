@@ -49,12 +49,6 @@ npm run dev
 
 Open [http://localhost:5173](http://localhost:5173), ask your question, then click **Convene council**.
 
-## New chat UX
-
-- Chat-style thread inspired by modern AI products (clean message bubbles, clear hierarchy, minimal chrome)
-- Inline **Thinking** button on assistant messages to reveal/hide highlighted reasoning text
-- Live status line while models are generating responses
-
 ### Build for production
 
 ```bash
