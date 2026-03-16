@@ -1,7 +1,5 @@
-import { useState } from "react";
-import type { CSSProperties } from "react";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
+import { useMemo, useState } from "react";
+import { GoogleGenAI } from "@google/genai";
 
 type AgentId = "critic" | "optimist" | "analyst" | "devils_advocate";
 
@@ -21,9 +19,17 @@ interface AgentState {
   round2Error: string | null;
 }
 
-type CouncilState = Record<AgentId, AgentState>;
+interface ChatMessage {
+  id: string;
+  role: "user" | "assistant" | "synthesis";
+  title: string;
+  body: string;
+  time: string;
+  color?: string;
+  trace?: string;
+}
 
-// ─── Agent Definitions ───────────────────────────────────────────────────────
+type CouncilState = Record<AgentId, AgentState>;
 
 const AGENTS: Agent[] = [
   {
@@ -45,7 +51,7 @@ const AGENTS: Agent[] = [
     name: "The Analyst",
     color: "#3b82f6",
     systemPrompt:
-      "You are The Analyst. Your role is to break down problems with logic, data, and structure. No emotional language — just clear reasoning and evidence-based conclusions. Keep responses to 3-4 sentences.",
+      "You are The Analyst. Your role is to break down problems with logic, data, and structure. No emotional language, just clear reasoning and evidence-based conclusions. Keep responses to 3-4 sentences.",
   },
   {
     id: "devils_advocate",
@@ -59,44 +65,23 @@ const AGENTS: Agent[] = [
 const SYNTHESIZER_SYSTEM_PROMPT =
   "You are the Council Synthesizer. Given a multi-agent debate, identify the key tensions, what each side got right, and produce a final nuanced answer. Be concise and decisive.";
 
-const GEMINI_API_URL =
-  "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
-
-// ─── API Helper ───────────────────────────────────────────────────────────────
+const GEMINI_MODEL = "gemini-3.0-flash";
 
 async function callGemini(
-  apiKey: string,
+  client: GoogleGenAI,
   userPrompt: string,
   systemPrompt: string
 ): Promise<string> {
-  const response = await fetch(`${GEMINI_API_URL}?key=${apiKey}`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: userPrompt }] }],
-      systemInstruction: { parts: [{ text: systemPrompt }] },
-    }),
+  const response = await client.models.generateContent({
+    model: GEMINI_MODEL,
+    contents: userPrompt,
+    config: {
+      systemInstruction: systemPrompt,
+    },
   });
 
-  if (!response.ok) {
-    const errorBody = await response.text();
-    let message = `API error ${response.status}`;
-    try {
-      const parsed = JSON.parse(errorBody);
-      message = parsed?.error?.message ?? message;
-    } catch {
-      // ignore parse errors
-    }
-    throw new Error(message);
-  }
-
-  const data = await response.json();
-  return (
-    data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "(no response text)"
-  );
+  return response.text ?? "(no response text)";
 }
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function makeEmptyAgentState(): AgentState {
   return {
@@ -118,344 +103,62 @@ function makeInitialCouncilState(): CouncilState {
   };
 }
 
-// ─── Styles ───────────────────────────────────────────────────────────────────
-
-const S = {
-  root: {
-    minHeight: "100vh",
-    background: "#0a0a0f",
-    color: "#e2e8f0",
-    fontFamily: "'Inter', 'Segoe UI', system-ui, sans-serif",
-    padding: "0 0 60px",
-  } as CSSProperties,
-
-  header: {
-    borderBottom: "1px solid #1e1e2e",
-    padding: "28px 32px 24px",
-    background: "#0d0d18",
-  } as CSSProperties,
-
-  titleRow: {
-    display: "flex",
-    alignItems: "center",
-    gap: "12px",
-    marginBottom: "4px",
-  } as CSSProperties,
-
-  title: {
-    fontSize: "22px",
-    fontWeight: 700,
-    letterSpacing: "-0.5px",
-    color: "#f1f5f9",
-    margin: 0,
-  } as CSSProperties,
-
-  subtitle: {
-    fontSize: "13px",
-    color: "#64748b",
-    margin: 0,
-  } as CSSProperties,
-
-  badge: (color: string) =>
-    ({
-      display: "inline-block",
-      width: "10px",
-      height: "10px",
-      borderRadius: "50%",
-      background: color,
-    }) as CSSProperties,
-
-  inputArea: {
-    padding: "28px 32px",
-    borderBottom: "1px solid #1e1e2e",
-    display: "flex",
-    flexDirection: "column",
-    gap: "14px",
-  } as CSSProperties,
-
-  inputRow: {
-    display: "flex",
-    gap: "12px",
-    alignItems: "center",
-    flexWrap: "wrap",
-  } as CSSProperties,
-
-  inputLabel: {
-    fontSize: "11px",
-    fontWeight: 600,
-    letterSpacing: "0.08em",
-    textTransform: "uppercase" as const,
-    color: "#475569",
-    marginBottom: "6px",
-    display: "block",
-  } as CSSProperties,
-
-  input: {
-    background: "#111121",
-    border: "1px solid #2a2a3e",
-    borderRadius: "6px",
-    color: "#e2e8f0",
-    fontSize: "14px",
-    padding: "10px 14px",
-    outline: "none",
-    transition: "border-color 0.15s",
-  } as CSSProperties,
-
-  questionInput: {
-    background: "#111121",
-    border: "1px solid #2a2a3e",
-    borderRadius: "6px",
-    color: "#e2e8f0",
-    fontSize: "14px",
-    padding: "12px 14px",
-    outline: "none",
-    resize: "vertical" as const,
-    minHeight: "72px",
-    width: "100%",
-    boxSizing: "border-box" as const,
-  } as CSSProperties,
-
-  button: (disabled: boolean) =>
-    ({
-      background: disabled ? "#1e1e2e" : "#4f46e5",
-      color: disabled ? "#475569" : "#fff",
-      border: "none",
-      borderRadius: "6px",
-      fontSize: "14px",
-      fontWeight: 600,
-      padding: "11px 24px",
-      cursor: disabled ? "not-allowed" : "pointer",
-      transition: "background 0.15s",
-      whiteSpace: "nowrap" as const,
-    }) as CSSProperties,
-
-  content: {
-    maxWidth: "1200px",
-    margin: "0 auto",
-    padding: "0 32px",
-  } as CSSProperties,
-
-  sectionDivider: () =>
-    ({
-      display: "flex",
-      alignItems: "center",
-      gap: "14px",
-      margin: "40px 0 24px",
-    }) as CSSProperties,
-
-  sectionLabel: (color: string) =>
-    ({
-      fontSize: "11px",
-      fontWeight: 700,
-      letterSpacing: "0.12em",
-      textTransform: "uppercase" as const,
-      color,
-      whiteSpace: "nowrap" as const,
-    }) as CSSProperties,
-
-  sectionLine: (color: string) =>
-    ({
-      flex: 1,
-      height: "1px",
-      background: `linear-gradient(to right, ${color}44, transparent)`,
-    }) as CSSProperties,
-
-  agentGrid: {
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-    gap: "16px",
-  } as CSSProperties,
-
-  agentCard: (color: string, visible: boolean) =>
-    ({
-      background: "#111121",
-      border: `1px solid ${color}33`,
-      borderRadius: "10px",
-      overflow: "hidden",
-      opacity: visible ? 1 : 0,
-      transform: visible ? "translateY(0)" : "translateY(12px)",
-      transition: "opacity 0.35s ease, transform 0.35s ease",
-    }) as CSSProperties,
-
-  cardHeader: (color: string) =>
-    ({
-      display: "flex",
-      alignItems: "center",
-      gap: "10px",
-      padding: "12px 16px",
-      borderBottom: `1px solid ${color}22`,
-      background: `${color}0d`,
-    }) as CSSProperties,
-
-  colorDot: (color: string) =>
-    ({
-      width: "8px",
-      height: "8px",
-      borderRadius: "50%",
-      background: color,
-      flexShrink: 0,
-      boxShadow: `0 0 6px ${color}88`,
-    }) as CSSProperties,
-
-  agentName: (color: string) =>
-    ({
-      fontSize: "12px",
-      fontWeight: 700,
-      letterSpacing: "0.06em",
-      textTransform: "uppercase" as const,
-      color,
-    }) as CSSProperties,
-
-  cardBody: {
-    padding: "14px 16px",
-    minHeight: "80px",
-  } as CSSProperties,
-
-  responseText: {
-    fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
-    fontSize: "13px",
-    lineHeight: "1.7",
-    color: "#cbd5e1",
-    margin: 0,
-    whiteSpace: "pre-wrap" as const,
-  } as CSSProperties,
-
-  loadingDots: {
-    display: "flex",
-    gap: "5px",
-    alignItems: "center",
-    padding: "8px 0",
-  } as CSSProperties,
-
-  errorText: {
-    fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
-    fontSize: "12px",
-    color: "#ef4444",
-    margin: 0,
-  } as CSSProperties,
-
-  synthesisCard: {
-    background: "#111121",
-    border: "1px solid #4f46e533",
-    borderRadius: "10px",
-    overflow: "hidden",
-  } as CSSProperties,
-
-  synthesisHeader: {
-    display: "flex",
-    alignItems: "center",
-    gap: "10px",
-    padding: "14px 18px",
-    borderBottom: "1px solid #4f46e522",
-    background: "#4f46e50d",
-  } as CSSProperties,
-
-  synthesisTitle: {
-    fontSize: "12px",
-    fontWeight: 700,
-    letterSpacing: "0.06em",
-    textTransform: "uppercase" as const,
-    color: "#818cf8",
-  } as CSSProperties,
-
-  synthesisBody: {
-    padding: "18px",
-  } as CSSProperties,
-
-  synthesisText: {
-    fontFamily: "'JetBrains Mono', 'Fira Code', 'Courier New', monospace",
-    fontSize: "13px",
-    lineHeight: "1.8",
-    color: "#e2e8f0",
-    margin: 0,
-    whiteSpace: "pre-wrap" as const,
-  } as CSSProperties,
-
-  agentBadges: {
-    display: "flex",
-    gap: "8px",
-  } as CSSProperties,
-} as const;
-
-// ─── Sub-components ───────────────────────────────────────────────────────────
-
-function LoadingDots({ color }: { color: string }) {
-  return (
-    <div style={S.loadingDots}>
-      {[0, 1, 2].map((i) => (
-        <span
-          key={i}
-          style={{
-            width: "6px",
-            height: "6px",
-            borderRadius: "50%",
-            background: color,
-            opacity: 0.7,
-            animation: `pulse 1.2s ease-in-out ${i * 0.2}s infinite`,
-          }}
-        />
-      ))}
-    </div>
-  );
+function nowTime(): string {
+  return new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
 }
-
-function AgentCard({
-  agent,
-  state,
-  round,
-}: {
-  agent: Agent;
-  state: AgentState;
-  round: 1 | 2;
-}) {
-  const isLoading = round === 1 ? state.round1Loading : state.round2Loading;
-  const response = round === 1 ? state.round1 : state.round2;
-  const error = round === 1 ? state.round1Error : state.round2Error;
-  const visible = isLoading || response !== null || error !== null;
-
-  return (
-    <div style={S.agentCard(agent.color, visible)}>
-      <div style={S.cardHeader(agent.color)}>
-        <div style={S.colorDot(agent.color)} />
-        <span style={S.agentName(agent.color)}>{agent.name}</span>
-      </div>
-      <div style={S.cardBody}>
-        {isLoading && <LoadingDots color={agent.color} />}
-        {error && <p style={S.errorText}>⚠ {error}</p>}
-        {response && <p style={S.responseText}>{response}</p>}
-      </div>
-    </div>
-  );
-}
-
-function SectionDivider({
-  label,
-  color,
-}: {
-  label: string;
-  color: string;
-}) {
-  return (
-    <div style={S.sectionDivider()}>
-      <span style={S.sectionLabel(color)}>{label}</span>
-      <div style={S.sectionLine(color)} />
-    </div>
-  );
-}
-
-// ─── Main Component ───────────────────────────────────────────────────────────
 
 export default function GeminiCouncil() {
-  const [apiKey, setApiKey] = useState("");
+  const envApiKey = import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? "";
+  const client = useMemo(
+    () => (envApiKey ? new GoogleGenAI({ apiKey: envApiKey }) : null),
+    [envApiKey]
+  );
   const [question, setQuestion] = useState("");
   const [running, setRunning] = useState(false);
-  const [council, setCouncil] = useState<CouncilState>(
-    makeInitialCouncilState()
-  );
-  const [synthesis, setSynthesis] = useState<string | null>(null);
+  const [started, setStarted] = useState(false);
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [council, setCouncil] = useState<CouncilState>(makeInitialCouncilState());
   const [synthesisLoading, setSynthesisLoading] = useState(false);
   const [synthesisError, setSynthesisError] = useState<string | null>(null);
-  const [started, setStarted] = useState(false);
+  const [globalError, setGlobalError] = useState<string | null>(null);
+  const [openTraces, setOpenTraces] = useState<Record<string, boolean>>({});
+
+  const hasApiKey = envApiKey.length > 0;
+
+  const round1Done = useMemo(
+    () =>
+      AGENTS.filter((agent) => {
+        const state = council[agent.id];
+        return Boolean(state.round1 || state.round1Error);
+      }).length,
+    [council]
+  );
+
+  const round2Done = useMemo(
+    () =>
+      AGENTS.filter((agent) => {
+        const state = council[agent.id];
+        return Boolean(state.round2 || state.round2Error);
+      }).length,
+    [council]
+  );
+
+  const progressLabel = useMemo(() => {
+    if (!running) return "Idle";
+    if (round1Done < AGENTS.length) {
+      return `Round 1 ${round1Done}/${AGENTS.length}`;
+    }
+    if (round2Done < AGENTS.length) {
+      return `Round 2 ${round2Done}/${AGENTS.length}`;
+    }
+    if (synthesisLoading) {
+      return "Synthesis";
+    }
+    return "Finalizing";
+  }, [round1Done, round2Done, running, synthesisLoading]);
 
   function patchAgent(id: AgentId, patch: Partial<AgentState>) {
     setCouncil((prev) => ({
@@ -464,17 +167,37 @@ export default function GeminiCouncil() {
     }));
   }
 
-  async function runCouncil() {
-    if (!apiKey.trim() || !question.trim() || running) return;
+  function toggleTrace(messageId: string) {
+    setOpenTraces((prev) => ({
+      ...prev,
+      [messageId]: !prev[messageId],
+    }));
+  }
 
+  async function runCouncil() {
+    if (!question.trim() || running) return;
+    if (!hasApiKey || !client) {
+      setGlobalError("Missing VITE_GEMINI_API_KEY. Add it in your .env file.");
+      return;
+    }
+
+    const prompt = question.trim();
+    setGlobalError(null);
+    setSynthesisError(null);
+    setOpenTraces({});
     setRunning(true);
     setStarted(true);
     setCouncil(makeInitialCouncilState());
-    setSynthesis(null);
-    setSynthesisLoading(false);
-    setSynthesisError(null);
+    setMessages([
+      {
+        id: `user-${Date.now()}`,
+        role: "user",
+        title: "You",
+        body: prompt,
+        time: nowTime(),
+      },
+    ]);
 
-    // ── Round 1 ──────────────────────────────────────────────────────────────
     for (const agent of AGENTS) {
       patchAgent(agent.id, { round1Loading: true });
     }
@@ -485,40 +208,7 @@ export default function GeminiCouncil() {
       analyst: null,
       devils_advocate: null,
     };
-
-    await Promise.all(
-      AGENTS.map(async (agent) => {
-        try {
-          const text = await callGemini(apiKey, question, agent.systemPrompt);
-          round1Results[agent.id] = text;
-          patchAgent(agent.id, { round1: text, round1Loading: false });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Unknown error";
-          patchAgent(agent.id, { round1Error: msg, round1Loading: false });
-        }
-      })
-    );
-
-    // ── Round 2 ──────────────────────────────────────────────────────────────
-    for (const agent of AGENTS) {
-      patchAgent(agent.id, { round2Loading: true });
-    }
-
-    const round2Prompt = (agent: Agent) => {
-      const others = AGENTS.filter((a) => a.id !== agent.id);
-      const otherResponses = others
-        .map((a) => `${a.name}: ${round1Results[a.id] ?? "(no response)"}`)
-        .join("\n\n");
-      return `Original question: ${question}
-
-Here is what the other council members said in Round 1:
-
-${otherResponses}
-
-Now respond as your role. You may agree, disagree, or build on what was said.`;
-    };
-
-    const round2Results: Record<AgentId, string | null> = {
+    const round1Errors: Record<AgentId, string | null> = {
       critic: null,
       optimist: null,
       analyst: null,
@@ -528,188 +218,252 @@ Now respond as your role. You may agree, disagree, or build on what was said.`;
     await Promise.all(
       AGENTS.map(async (agent) => {
         try {
-          const text = await callGemini(
-            apiKey,
-            round2Prompt(agent),
-            agent.systemPrompt
-          );
+          const text = await callGemini(client, prompt, agent.systemPrompt);
+          round1Results[agent.id] = text;
+          patchAgent(agent.id, { round1: text, round1Loading: false });
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "Unknown error";
+          round1Errors[agent.id] = msg;
+          patchAgent(agent.id, { round1Error: msg, round1Loading: false });
+        }
+      })
+    );
+
+    setMessages((prev) => [
+      ...prev,
+      ...AGENTS.map((agent) => {
+        const body = round1Results[agent.id] ?? round1Errors[agent.id] ?? "(no response)";
+        return {
+          id: `r1-${agent.id}-${Date.now()}`,
+          role: "assistant" as const,
+          title: `${agent.name} - Round 1`,
+          body,
+          time: nowTime(),
+          color: agent.color,
+          trace: `Input question:\n${prompt}\n\nPersona instruction:\n${agent.systemPrompt}`,
+        };
+      }),
+    ]);
+
+    for (const agent of AGENTS) {
+      patchAgent(agent.id, { round2Loading: true });
+    }
+
+    const round2Results: Record<AgentId, string | null> = {
+      critic: null,
+      optimist: null,
+      analyst: null,
+      devils_advocate: null,
+    };
+    const round2Errors: Record<AgentId, string | null> = {
+      critic: null,
+      optimist: null,
+      analyst: null,
+      devils_advocate: null,
+    };
+
+    const buildRound2Prompt = (agent: Agent): string => {
+      const others = AGENTS.filter((item) => item.id !== agent.id);
+      const reactions = others
+        .map((item) => `${item.name}: ${round1Results[item.id] ?? "(no response)"}`)
+        .join("\n\n");
+
+      return `Original question: ${prompt}
+
+Round 1 from other council members:
+
+${reactions}
+
+Now respond as your role. You may agree, disagree, or build on what was said.`;
+    };
+
+    await Promise.all(
+      AGENTS.map(async (agent) => {
+        try {
+          const promptForAgent = buildRound2Prompt(agent);
+          const text = await callGemini(client, promptForAgent, agent.systemPrompt);
           round2Results[agent.id] = text;
           patchAgent(agent.id, { round2: text, round2Loading: false });
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : "Unknown error";
+        } catch (error) {
+          const msg = error instanceof Error ? error.message : "Unknown error";
+          round2Errors[agent.id] = msg;
           patchAgent(agent.id, { round2Error: msg, round2Loading: false });
         }
       })
     );
 
-    // ── Synthesis ─────────────────────────────────────────────────────────────
+    setMessages((prev) => [
+      ...prev,
+      ...AGENTS.map((agent) => {
+        const body = round2Results[agent.id] ?? round2Errors[agent.id] ?? "(no response)";
+        const peers = AGENTS.filter((item) => item.id !== agent.id)
+          .map((item) => `${item.name}: ${round1Results[item.id] ?? "(no response)"}`)
+          .join("\n");
+        return {
+          id: `r2-${agent.id}-${Date.now()}`,
+          role: "assistant" as const,
+          title: `${agent.name} - Round 2`,
+          body,
+          time: nowTime(),
+          color: agent.color,
+          trace: `Question:\n${prompt}\n\nRound 1 context from peers:\n${peers}`,
+        };
+      }),
+    ]);
+
     setSynthesisLoading(true);
 
-    const allResponses = AGENTS.map(
-      (a) =>
-        `${a.name}:\n  Round 1: ${round1Results[a.id] ?? "(no response)"}\n  Round 2: ${round2Results[a.id] ?? "(no response)"}`
-    ).join("\n\n");
+    const allResponses = AGENTS.map((agent) => {
+      return `${agent.name}:\nRound 1: ${round1Results[agent.id] ?? "(no response)"}\nRound 2: ${round2Results[agent.id] ?? "(no response)"}`;
+    }).join("\n\n");
 
-    const synthesisPrompt = `Question debated: ${question}
+    const synthesisPrompt = `Question debated: ${prompt}
 
 Here is the full debate:
 
 ${allResponses}
 
-Synthesize the debate and give a final nuanced answer.`;
+Synthesize the debate and provide a final nuanced answer.`;
 
     try {
       const text = await callGemini(
-        apiKey,
+        client,
         synthesisPrompt,
         SYNTHESIZER_SYSTEM_PROMPT
       );
-      setSynthesis(text);
-    } catch (err) {
-      const msg = err instanceof Error ? err.message : "Unknown error";
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `synthesis-${Date.now()}`,
+          role: "synthesis",
+          title: "Council Synthesis",
+          body: text,
+          time: nowTime(),
+          color: "#818cf8",
+          trace: `Synthesis used all responses from both rounds to produce one balanced answer.`,
+        },
+      ]);
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : "Unknown error";
       setSynthesisError(msg);
+      setMessages((prev) => [
+        ...prev,
+        {
+          id: `synthesis-error-${Date.now()}`,
+          role: "synthesis",
+          title: "Council Synthesis",
+          body: `Error: ${msg}`,
+          time: nowTime(),
+          color: "#818cf8",
+        },
+      ]);
     } finally {
       setSynthesisLoading(false);
       setRunning(false);
     }
   }
 
-  const canRun = apiKey.trim().length > 0 && question.trim().length > 0 && !running;
+  const canRun = question.trim().length > 0 && !running;
 
   return (
-    <>
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 0.3; transform: scale(0.85); }
-          50% { opacity: 1; transform: scale(1); }
-        }
-        * { box-sizing: border-box; }
-        body { margin: 0; }
-        textarea:focus, input:focus {
-          border-color: #4f46e5 !important;
-          box-shadow: 0 0 0 3px #4f46e522;
-        }
-        button:hover:not(:disabled) {
-          background: #4338ca !important;
-        }
-      `}</style>
-
-      <div style={S.root}>
-        {/* Header */}
-        <header style={S.header}>
-          <div style={S.titleRow}>
-            <div style={S.agentBadges}>
-              {AGENTS.map((a) => (
-                <div key={a.id} style={S.badge(a.color)} />
-              ))}
-            </div>
-            <h1 style={S.title}>Gemini Council</h1>
-          </div>
-          <p style={S.subtitle}>
-            4 AI agents with distinct personas debate your question across 2
-            rounds, followed by a synthesis
-          </p>
-        </header>
-
-        {/* Input area */}
-        <div style={S.inputArea}>
-          <div style={S.content}>
-            <div>
-              <label style={S.inputLabel} htmlFor="api-key">
-                Gemini API Key
-              </label>
-              <input
-                id="api-key"
-                type="password"
-                placeholder="AIza..."
-                value={apiKey}
-                onChange={(e) => setApiKey(e.target.value)}
-                style={{ ...S.input, width: "100%", maxWidth: "420px" }}
-                disabled={running}
-              />
-            </div>
-            <div>
-              <label style={S.inputLabel} htmlFor="question">
-                Your Question
-              </label>
-              <textarea
-                id="question"
-                placeholder="e.g. Should humanity colonize Mars?"
-                value={question}
-                onChange={(e) => setQuestion(e.target.value)}
-                style={S.questionInput}
-                disabled={running}
-              />
-            </div>
-            <div style={S.inputRow}>
-              <button
-                onClick={runCouncil}
-                disabled={!canRun}
-                style={S.button(!canRun)}
-              >
-                {running ? "Council in session…" : "Convene the Council"}
-              </button>
-            </div>
-          </div>
+    <div className="gc-root">
+      <header className="gc-header">
+        <div className="gc-title-row">
+          <h1>Gemini Council</h1>
+          <span className="gc-beta">Council chat</span>
         </div>
+        <p>
+          A clean multi-agent chat experience: 4 perspectives, 2 rounds, and one
+          final synthesis.
+        </p>
+      </header>
 
-        {/* Results */}
-        {started && (
-          <div style={{ ...S.content, paddingTop: "8px" }}>
-            {/* Round 1 */}
-            <SectionDivider label="Round 1 — Initial Positions" color="#6366f1" />
-            <div style={S.agentGrid}>
-              {AGENTS.map((agent) => (
-                <AgentCard
-                  key={agent.id}
-                  agent={agent}
-                  state={council[agent.id]}
-                  round={1}
-                />
-              ))}
-            </div>
+      <main className="gc-main">
+        {!hasApiKey && (
+          <div className="gc-alert">
+            Add <code>VITE_GEMINI_API_KEY</code> to your <code>.env</code> file.
+          </div>
+        )}
 
-            {/* Round 2 */}
-            <SectionDivider label="Round 2 — Debate" color="#8b5cf6" />
-            <div style={S.agentGrid}>
-              {AGENTS.map((agent) => (
-                <AgentCard
-                  key={agent.id}
-                  agent={agent}
-                  state={council[agent.id]}
-                  round={2}
-                />
-              ))}
-            </div>
+        {globalError && <div className="gc-alert gc-alert-error">{globalError}</div>}
+        {synthesisError && <div className="gc-alert gc-alert-error">{synthesisError}</div>}
 
-            {/* Synthesis */}
-            <SectionDivider label="Synthesis" color="#818cf8" />
-            {(synthesisLoading || synthesis || synthesisError) && (
-              <div style={S.synthesisCard}>
-                <div style={S.synthesisHeader}>
-                  <div
-                    style={{
-                      width: "8px",
-                      height: "8px",
-                      borderRadius: "50%",
-                      background: "#818cf8",
-                      boxShadow: "0 0 6px #818cf888",
-                    }}
-                  />
-                  <span style={S.synthesisTitle}>Council Synthesis</span>
-                </div>
-                <div style={S.synthesisBody}>
-                  {synthesisLoading && <LoadingDots color="#818cf8" />}
-                  {synthesisError && (
-                    <p style={S.errorText}>⚠ {synthesisError}</p>
+        <section className="gc-chat-shell">
+          <div className="gc-chat-thread">
+            {!started && (
+              <div className="gc-empty">
+                <h2>Start a new council thread</h2>
+                <p>Ask a question and the council will debate it in real time.</p>
+              </div>
+            )}
+
+            {messages.map((message) => {
+              const isUser = message.role === "user";
+              const isTraceOpen = Boolean(openTraces[message.id]);
+
+              return (
+                <article
+                  key={message.id}
+                  className={`gc-message ${isUser ? "is-user" : "is-assistant"}`}
+                >
+                  <div className="gc-message-head">
+                    <div className="gc-message-title-wrap">
+                      {!isUser && message.color && (
+                        <span
+                          className="gc-color-dot"
+                          style={{ backgroundColor: message.color }}
+                        />
+                      )}
+                      <span className="gc-message-title">{message.title}</span>
+                    </div>
+                    <time>{message.time}</time>
+                  </div>
+
+                  <p className="gc-message-body">{message.body}</p>
+
+                  {message.trace && (
+                    <>
+                      <button
+                        type="button"
+                        className="gc-trace-toggle"
+                        onClick={() => toggleTrace(message.id)}
+                      >
+                        {isTraceOpen ? "Hide thinking" : "Thinking"}
+                      </button>
+                      {isTraceOpen && (
+                        <pre className="gc-trace-box gc-trace-highlight">{message.trace}</pre>
+                      )}
+                    </>
                   )}
-                  {synthesis && <p style={S.synthesisText}>{synthesis}</p>}
-                </div>
+                </article>
+              );
+            })}
+
+            {running && (
+              <div className="gc-thinking-inline">
+                <span className="gc-thinking-dot" />
+                Models are thinking... {progressLabel}
               </div>
             )}
           </div>
-        )}
-      </div>
-    </>
+
+          <div className="gc-composer">
+            <label htmlFor="question" className="gc-composer-label">
+              Your question
+            </label>
+            <textarea
+              id="question"
+              value={question}
+              disabled={running}
+              placeholder="e.g. Should we launch this product now or wait one quarter?"
+              onChange={(event) => setQuestion(event.target.value)}
+            />
+            <button type="button" onClick={runCouncil} disabled={!canRun || !hasApiKey}>
+              {running ? "Council in progress..." : "Convene council"}
+            </button>
+          </div>
+        </section>
+      </main>
+    </div>
   );
 }
