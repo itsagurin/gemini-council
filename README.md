@@ -6,8 +6,6 @@
 
 You enter a question and watch 4 agents powered by Google's Gemini API argue across 2 rounds, then a neutral **Council Synthesizer** summarises the debate and gives a final answer.
 
-The app uses the official JavaScript SDK: `@google/genai`.
-
 | Agent | Color | Role |
 |---|---|---|
 | **The Critic** | 🔴 Red | Challenges assumptions, finds flaws |
