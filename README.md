@@ -46,7 +46,7 @@ Windows PowerShell:
 Copy-Item .env.example .env
 # then edit .env and set:
 # VITE_GEMINI_API_KEY=...
-# VITE_FREE_TIER_GEMINI=true
+# VITE_FREE_TIER_GEMINI=[true or false]
 npm install
 npm run dev
 ```
