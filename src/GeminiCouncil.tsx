@@ -65,7 +65,7 @@ const AGENTS: Agent[] = [
 const SYNTHESIZER_SYSTEM_PROMPT =
   "You are the Council Synthesizer. Given a multi-agent debate, identify the key tensions, what each side got right, and produce a final nuanced answer. Be concise and decisive.";
 
-const GEMINI_MODEL = "gemini-3.0-flash";
+const GEMINI_MODEL = "gemini-3-flash-preview";
 
 async function callGemini(
   client: GoogleGenAI,
@@ -110,8 +110,14 @@ function nowTime(): string {
   });
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 export default function GeminiCouncil() {
   const envApiKey = import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? "";
+  const isFreeTier = import.meta.env.FREE_TIER_GEMINI === "true";
+  const DELAY_MS = 13000;
   const client = useMemo(
     () => (envApiKey ? new GoogleGenAI({ apiKey: envApiKey }) : null),
     [envApiKey]
@@ -215,19 +221,26 @@ export default function GeminiCouncil() {
       devils_advocate: null,
     };
 
-    await Promise.all(
-      AGENTS.map(async (agent) => {
-        try {
-          const text = await callGemini(client, prompt, agent.systemPrompt);
-          round1Results[agent.id] = text;
-          patchAgent(agent.id, { round1: text, round1Loading: false });
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : "Unknown error";
-          round1Errors[agent.id] = msg;
-          patchAgent(agent.id, { round1Error: msg, round1Loading: false });
-        }
-      })
-    );
+    const executeRound1 = async (agent: Agent) => {
+      try {
+        const text = await callGemini(client, prompt, agent.systemPrompt);
+        round1Results[agent.id] = text;
+        patchAgent(agent.id, { round1: text, round1Loading: false });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Unknown error";
+        round1Errors[agent.id] = msg;
+        patchAgent(agent.id, { round1Error: msg, round1Loading: false });
+      }
+    };
+
+    if (isFreeTier) {
+      for (const agent of AGENTS) {
+        await executeRound1(agent);
+        await sleep(DELAY_MS);
+      }
+    } else {
+      await Promise.all(AGENTS.map(executeRound1));
+    }
 
     setMessages((prev) => [
       ...prev,
@@ -277,20 +290,27 @@ ${reactions}
 Now respond as your role. You may agree, disagree, or build on what was said.`;
     };
 
-    await Promise.all(
-      AGENTS.map(async (agent) => {
-        try {
-          const promptForAgent = buildRound2Prompt(agent);
-          const text = await callGemini(client, promptForAgent, agent.systemPrompt);
-          round2Results[agent.id] = text;
-          patchAgent(agent.id, { round2: text, round2Loading: false });
-        } catch (error) {
-          const msg = error instanceof Error ? error.message : "Unknown error";
-          round2Errors[agent.id] = msg;
-          patchAgent(agent.id, { round2Error: msg, round2Loading: false });
-        }
-      })
-    );
+    const executeRound2 = async (agent: Agent) => {
+      try {
+        const promptForAgent = buildRound2Prompt(agent);
+        const text = await callGemini(client, promptForAgent, agent.systemPrompt);
+        round2Results[agent.id] = text;
+        patchAgent(agent.id, { round2: text, round2Loading: false });
+      } catch (error) {
+        const msg = error instanceof Error ? error.message : "Unknown error";
+        round2Errors[agent.id] = msg;
+        patchAgent(agent.id, { round2Error: msg, round2Loading: false });
+      }
+    };
+
+    if (isFreeTier) {
+      for (const agent of AGENTS) {
+        await executeRound2(agent);
+        await sleep(DELAY_MS);
+      }
+    } else {
+      await Promise.all(AGENTS.map(executeRound2));
+    }
 
     setMessages((prev) => [
       ...prev,
