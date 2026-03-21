@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
 import { GoogleGenAI } from "@google/genai";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 type AgentId = "critic" | "optimist" | "analyst" | "devils_advocate";
 
@@ -114,9 +116,54 @@ function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+function extractRetryDelaySeconds(rawMessage: string): number | null {
+  const retryInMatch = rawMessage.match(/Please retry in\s+([\d.]+)s/i);
+  if (retryInMatch) {
+    const seconds = Number.parseFloat(retryInMatch[1]);
+    return Number.isFinite(seconds) ? seconds : null;
+  }
+
+  try {
+    const parsed = JSON.parse(rawMessage) as {
+      error?: { details?: Array<{ retryDelay?: string }> };
+    };
+    const retryDelay = parsed.error?.details?.find((detail) => detail.retryDelay)
+      ?.retryDelay;
+    if (!retryDelay) return null;
+    const retryDelayMatch = retryDelay.match(/^([\d.]+)s$/);
+    if (!retryDelayMatch) return null;
+    const seconds = Number.parseFloat(retryDelayMatch[1]);
+    return Number.isFinite(seconds) ? seconds : null;
+  } catch {
+    return null;
+  }
+}
+
+function formatGeminiError(error: unknown): string {
+  const rawMessage = error instanceof Error ? error.message : "Unknown error";
+  const isRateLimitError =
+    rawMessage.includes('"code":429') ||
+    /RESOURCE_EXHAUSTED/i.test(rawMessage) ||
+    /quota exceeded/i.test(rawMessage);
+
+  if (!isRateLimitError) {
+    return rawMessage;
+  }
+
+  const retryAfterSeconds = extractRetryDelaySeconds(rawMessage);
+  if (retryAfterSeconds !== null) {
+    const roundedSeconds = Math.ceil(retryAfterSeconds);
+    return `Free Gemini limit reached (429). Wait about ${roundedSeconds}s and try again.`;
+  }
+
+  return "Free Gemini limit reached (429). Wait a bit and try again.";
+}
+
 export default function GeminiCouncil() {
   const envApiKey = import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? "";
-  const isFreeTier = import.meta.env.FREE_TIER_GEMINI === "true";
+  const isFreeTier =
+    (import.meta.env.VITE_FREE_TIER_GEMINI ?? import.meta.env.FREE_TIER_GEMINI) ===
+    "true";
   const DELAY_MS = 13000;
   const client = useMemo(
     () => (envApiKey ? new GoogleGenAI({ apiKey: envApiKey }) : null),
@@ -131,6 +178,7 @@ export default function GeminiCouncil() {
   const [synthesisError, setSynthesisError] = useState<string | null>(null);
   const [globalError, setGlobalError] = useState<string | null>(null);
   const [openTraces, setOpenTraces] = useState<Record<string, boolean>>({});
+  const [showThinkingPanel, setShowThinkingPanel] = useState(true);
 
   const hasApiKey = envApiKey.length > 0;
 
@@ -188,9 +236,37 @@ export default function GeminiCouncil() {
     }
 
     const prompt = question.trim();
+    setQuestion("");
+    let lastFreeTierRequestCompletedAt = 0;
+
+    const callGeminiWithRateLimit = async (
+      userPrompt: string,
+      systemPrompt: string
+    ): Promise<string> => {
+      if (!isFreeTier) {
+        return callGemini(client, userPrompt, systemPrompt);
+      }
+
+      if (lastFreeTierRequestCompletedAt > 0) {
+        const elapsed = Date.now() - lastFreeTierRequestCompletedAt;
+        const waitMs = Math.max(0, DELAY_MS - elapsed);
+        if (waitMs > 0) {
+          await sleep(waitMs);
+        }
+      }
+
+      try {
+        return await callGemini(client, userPrompt, systemPrompt);
+      } finally {
+        // Keep at least DELAY_MS between every free-tier API call.
+        lastFreeTierRequestCompletedAt = Date.now();
+      }
+    };
+
     setGlobalError(null);
     setSynthesisError(null);
     setOpenTraces({});
+    setShowThinkingPanel(true);
     setRunning(true);
     setStarted(true);
     setCouncil(makeInitialCouncilState());
@@ -223,11 +299,11 @@ export default function GeminiCouncil() {
 
     const executeRound1 = async (agent: Agent) => {
       try {
-        const text = await callGemini(client, prompt, agent.systemPrompt);
+        const text = await callGeminiWithRateLimit(prompt, agent.systemPrompt);
         round1Results[agent.id] = text;
         patchAgent(agent.id, { round1: text, round1Loading: false });
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "Unknown error";
+        const msg = formatGeminiError(error);
         round1Errors[agent.id] = msg;
         patchAgent(agent.id, { round1Error: msg, round1Loading: false });
       }
@@ -236,7 +312,6 @@ export default function GeminiCouncil() {
     if (isFreeTier) {
       for (const agent of AGENTS) {
         await executeRound1(agent);
-        await sleep(DELAY_MS);
       }
     } else {
       await Promise.all(AGENTS.map(executeRound1));
@@ -293,11 +368,14 @@ Now respond as your role. You may agree, disagree, or build on what was said.`;
     const executeRound2 = async (agent: Agent) => {
       try {
         const promptForAgent = buildRound2Prompt(agent);
-        const text = await callGemini(client, promptForAgent, agent.systemPrompt);
+        const text = await callGeminiWithRateLimit(
+          promptForAgent,
+          agent.systemPrompt
+        );
         round2Results[agent.id] = text;
         patchAgent(agent.id, { round2: text, round2Loading: false });
       } catch (error) {
-        const msg = error instanceof Error ? error.message : "Unknown error";
+        const msg = formatGeminiError(error);
         round2Errors[agent.id] = msg;
         patchAgent(agent.id, { round2Error: msg, round2Loading: false });
       }
@@ -306,7 +384,6 @@ Now respond as your role. You may agree, disagree, or build on what was said.`;
     if (isFreeTier) {
       for (const agent of AGENTS) {
         await executeRound2(agent);
-        await sleep(DELAY_MS);
       }
     } else {
       await Promise.all(AGENTS.map(executeRound2));
@@ -346,8 +423,7 @@ ${allResponses}
 Synthesize the debate and provide a final nuanced answer.`;
 
     try {
-      const text = await callGemini(
-        client,
+      const text = await callGeminiWithRateLimit(
         synthesisPrompt,
         SYNTHESIZER_SYSTEM_PROMPT
       );
@@ -364,7 +440,7 @@ Synthesize the debate and provide a final nuanced answer.`;
         },
       ]);
     } catch (error) {
-      const msg = error instanceof Error ? error.message : "Unknown error";
+      const msg = formatGeminiError(error);
       setSynthesisError(msg);
       setMessages((prev) => [
         ...prev,
@@ -417,7 +493,9 @@ Synthesize the debate and provide a final nuanced answer.`;
               </div>
             )}
 
-            {messages.map((message) => {
+            {messages
+              .filter((message) => message.role === "user" || message.role === "synthesis")
+              .map((message) => {
               const isUser = message.role === "user";
               const isTraceOpen = Boolean(openTraces[message.id]);
 
@@ -439,9 +517,13 @@ Synthesize the debate and provide a final nuanced answer.`;
                     <time>{message.time}</time>
                   </div>
 
-                  <p className="gc-message-body">{message.body}</p>
+                  <div className="gc-message-body">
+                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      {message.body}
+                    </ReactMarkdown>
+                  </div>
 
-                  {message.trace && (
+                  {message.role === "synthesis" && message.trace && (
                     <>
                       <button
                         type="button"
@@ -459,11 +541,130 @@ Synthesize the debate and provide a final nuanced answer.`;
               );
             })}
 
-            {running && (
-              <div className="gc-thinking-inline">
-                <span className="gc-thinking-dot" />
-                Models are thinking... {progressLabel}
+            {running && showThinkingPanel && (
+              <div className="gc-thinking-panel" aria-live="polite">
+                <div className="gc-thinking-panel-head">
+                  <div className="gc-thinking-main">
+                    <span className="gc-thinking-spinner" />
+                    <div>
+                      <p className="gc-thinking-title">Council is convening...</p>
+                      <p className="gc-thinking-status">{progressLabel}</p>
+                    </div>
+                    <button
+                      type="button"
+                      className="gc-thinking-close"
+                      onClick={() => setShowThinkingPanel(false)}
+                    >
+                      Hide
+                    </button>
+                  </div>
+                  <details className="gc-process-toggle">
+                    <summary>View process</summary>
+                    <div className="gc-process-panel">
+                      {AGENTS.map((agent) => {
+                        const state = council[agent.id];
+                        const round1Status = state.round1Error
+                          ? "Error"
+                          : state.round1
+                            ? "Done"
+                            : state.round1Loading
+                              ? "Loading"
+                              : "Pending";
+                        const round2Status = state.round2Error
+                          ? "Error"
+                          : state.round2
+                            ? "Done"
+                            : state.round2Loading
+                              ? "Loading"
+                              : "Pending";
+
+                        return (
+                          <article key={agent.id} className="gc-process-agent">
+                            <div className="gc-process-agent-head">
+                              <span
+                                className="gc-process-agent-dot"
+                                style={{ backgroundColor: agent.color }}
+                              />
+                              <span>{agent.name}</span>
+                            </div>
+                            <div className="gc-process-rounds">
+                              <span
+                                className={`gc-process-pill is-${round1Status.toLowerCase()}`}
+                              >
+                                R1: {round1Status}
+                              </span>
+                              <span
+                                className={`gc-process-pill is-${round2Status.toLowerCase()}`}
+                              >
+                                R2: {round2Status}
+                              </span>
+                            </div>
+                          </article>
+                        );
+                      })}
+                    </div>
+                  </details>
+                </div>
               </div>
+            )}
+
+            {running && !showThinkingPanel && (
+              <button
+                type="button"
+                className="gc-thinking-inline"
+                onClick={() => setShowThinkingPanel(true)}
+              >
+                <span className="gc-thinking-dot" />
+                Show thinking
+              </button>
+            )}
+
+            {!running && messages.some((message) => message.role === "synthesis") && (
+              <details className="gc-debate-details">
+                <summary>View detailed debate</summary>
+                <div className="gc-debate-list">
+                  {messages
+                    .filter((message) => message.role === "assistant")
+                    .map((message) => {
+                      const isTraceOpen = Boolean(openTraces[message.id]);
+                      return (
+                        <article key={message.id} className="gc-message gc-message-detail">
+                          <div className="gc-message-head">
+                            <div className="gc-message-title-wrap">
+                              {message.color && (
+                                <span
+                                  className="gc-color-dot"
+                                  style={{ backgroundColor: message.color }}
+                                />
+                              )}
+                              <span className="gc-message-title">{message.title}</span>
+                            </div>
+                            <time>{message.time}</time>
+                          </div>
+                          <div className="gc-message-body">
+                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                              {message.body}
+                            </ReactMarkdown>
+                          </div>
+                          {message.trace && (
+                            <>
+                              <button
+                                type="button"
+                                className="gc-trace-toggle"
+                                onClick={() => toggleTrace(message.id)}
+                              >
+                                {isTraceOpen ? "Hide thinking" : "Thinking"}
+                              </button>
+                              {isTraceOpen && (
+                                <pre className="gc-trace-box gc-trace-highlight">{message.trace}</pre>
+                              )}
+                            </>
+                          )}
+                        </article>
+                      );
+                    })}
+                </div>
+              </details>
             )}
           </div>
 
@@ -479,11 +680,14 @@ Synthesize the debate and provide a final nuanced answer.`;
               onChange={(event) => setQuestion(event.target.value)}
             />
             <button type="button" onClick={runCouncil} disabled={!canRun || !hasApiKey}>
-              {running ? "Council in progress..." : "Convene council"}
+              {running ? "Council in progress..." : "Ask the Council"}
             </button>
           </div>
         </section>
       </main>
+      <footer style={{ textAlign: 'center', padding: '24px', opacity: 0.4, fontSize: '15px' }}>
+        made with ♥ by <a href="https://github.com/itsagurin" target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>itsagurin</a>
+      </footer>
     </div>
   );
 }

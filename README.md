@@ -34,7 +34,9 @@ Create your environment file before opening the app:
 
 ```bash
 cp .env.example .env
-# then edit .env and set VITE_GEMINI_API_KEY
+# then edit .env and set:
+# VITE_GEMINI_API_KEY=...
+# VITE_FREE_TIER_GEMINI=true
 npm run dev
 ```
 
@@ -42,7 +44,9 @@ Windows PowerShell:
 
 ```powershell
 Copy-Item .env.example .env
-# then edit .env and set VITE_GEMINI_API_KEY
+# then edit .env and set:
+# VITE_GEMINI_API_KEY=...
+# VITE_FREE_TIER_GEMINI=true
 npm install
 npm run dev
 ```
@@ -61,6 +65,8 @@ npm run preview
 ## Security note
 
 Your API key is read from `VITE_GEMINI_API_KEY` in `.env` and injected by Vite at build/runtime.
+
+The free-tier request pacing flag is read from `VITE_FREE_TIER_GEMINI`.
 
 Do not commit real `.env` files. This project ignores them by default and includes `.env.example` as a safe template.
 
