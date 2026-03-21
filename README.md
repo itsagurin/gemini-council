@@ -51,7 +51,7 @@ npm install
 npm run dev
 ```
 
-Open [http://localhost:5173](http://localhost:5173), ask your question, then click **Convene council**.
+Open [http://localhost:5173](http://localhost:5173), ask your question, then click **Ask the Council**.
 
 ### Build for production
 
