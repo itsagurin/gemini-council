@@ -1,170 +1,21 @@
 import { useMemo, useState } from "react";
 import { GoogleGenAI } from "@google/genai";
-import ReactMarkdown from "react-markdown";
-import remarkGfm from "remark-gfm";
-
-type AgentId = "critic" | "optimist" | "analyst" | "devils_advocate";
-
-interface Agent {
-  id: AgentId;
-  name: string;
-  color: string;
-  systemPrompt: string;
-}
-
-interface AgentState {
-  round1: string | null;
-  round2: string | null;
-  round1Loading: boolean;
-  round2Loading: boolean;
-  round1Error: string | null;
-  round2Error: string | null;
-}
-
-interface ChatMessage {
-  id: string;
-  role: "user" | "assistant" | "synthesis";
-  title: string;
-  body: string;
-  time: string;
-  color?: string;
-  trace?: string;
-}
-
-type CouncilState = Record<AgentId, AgentState>;
-
-const AGENTS: Agent[] = [
-  {
-    id: "critic",
-    name: "The Critic",
-    color: "#ef4444",
-    systemPrompt:
-      "You are The Critic. Your role is to identify flaws, challenge assumptions, and find weaknesses in any argument or idea. Be sharp, direct, and intellectually rigorous. Keep responses to 3-4 sentences.",
-  },
-  {
-    id: "optimist",
-    name: "The Optimist",
-    color: "#22c55e",
-    systemPrompt:
-      "You are The Optimist. Your role is to find opportunities, build on ideas, and reframe problems as possibilities. Be constructive and energizing. Keep responses to 3-4 sentences.",
-  },
-  {
-    id: "analyst",
-    name: "The Analyst",
-    color: "#3b82f6",
-    systemPrompt:
-      "You are The Analyst. Your role is to break down problems with logic, data, and structure. No emotional language, just clear reasoning and evidence-based conclusions. Keep responses to 3-4 sentences.",
-  },
-  {
-    id: "devils_advocate",
-    name: "The Devil's Advocate",
-    color: "#f59e0b",
-    systemPrompt:
-      "You are The Devil's Advocate. Your role is to deliberately argue the opposite of what seems obvious, in order to stress-test ideas and surface hidden assumptions. Be provocative but coherent. Keep responses to 3-4 sentences.",
-  },
-];
-
-const SYNTHESIZER_SYSTEM_PROMPT =
-  "You are the Council Synthesizer. Given a multi-agent debate, identify the key tensions, what each side got right, and produce a final nuanced answer. Be concise and decisive.";
-
-const GEMINI_MODEL = "gemini-3-flash-preview";
-
-async function callGemini(
-  client: GoogleGenAI,
-  userPrompt: string,
-  systemPrompt: string
-): Promise<string> {
-  const response = await client.models.generateContent({
-    model: GEMINI_MODEL,
-    contents: userPrompt,
-    config: {
-      systemInstruction: systemPrompt,
-    },
-  });
-
-  return response.text ?? "(no response text)";
-}
-
-function makeEmptyAgentState(): AgentState {
-  return {
-    round1: null,
-    round2: null,
-    round1Loading: false,
-    round2Loading: false,
-    round1Error: null,
-    round2Error: null,
-  };
-}
-
-function makeInitialCouncilState(): CouncilState {
-  return {
-    critic: makeEmptyAgentState(),
-    optimist: makeEmptyAgentState(),
-    analyst: makeEmptyAgentState(),
-    devils_advocate: makeEmptyAgentState(),
-  };
-}
-
-function nowTime(): string {
-  return new Date().toLocaleTimeString([], {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-function extractRetryDelaySeconds(rawMessage: string): number | null {
-  const retryInMatch = rawMessage.match(/Please retry in\s+([\d.]+)s/i);
-  if (retryInMatch) {
-    const seconds = Number.parseFloat(retryInMatch[1]);
-    return Number.isFinite(seconds) ? seconds : null;
-  }
-
-  try {
-    const parsed = JSON.parse(rawMessage) as {
-      error?: { details?: Array<{ retryDelay?: string }> };
-    };
-    const retryDelay = parsed.error?.details?.find((detail) => detail.retryDelay)
-      ?.retryDelay;
-    if (!retryDelay) return null;
-    const retryDelayMatch = retryDelay.match(/^([\d.]+)s$/);
-    if (!retryDelayMatch) return null;
-    const seconds = Number.parseFloat(retryDelayMatch[1]);
-    return Number.isFinite(seconds) ? seconds : null;
-  } catch {
-    return null;
-  }
-}
-
-function formatGeminiError(error: unknown): string {
-  const rawMessage = error instanceof Error ? error.message : "Unknown error";
-  const isRateLimitError =
-    rawMessage.includes('"code":429') ||
-    /RESOURCE_EXHAUSTED/i.test(rawMessage) ||
-    /quota exceeded/i.test(rawMessage);
-
-  if (!isRateLimitError) {
-    return rawMessage;
-  }
-
-  const retryAfterSeconds = extractRetryDelaySeconds(rawMessage);
-  if (retryAfterSeconds !== null) {
-    const roundedSeconds = Math.ceil(retryAfterSeconds);
-    return `Free Gemini limit reached (429). Wait about ${roundedSeconds}s and try again.`;
-  }
-
-  return "Free Gemini limit reached (429). Wait a bit and try again.";
-}
+import CouncilMessage from "./council/CouncilMessage";
+import { callGemini } from "./council/api";
+import {
+  AGENTS,
+  FREE_TIER_DELAY_MS,
+  GEMINI_MODEL,
+  SYNTHESIZER_SYSTEM_PROMPT,
+} from "./council/constants";
+import type { Agent, AgentId, AgentState, ChatMessage, CouncilState } from "./council/types";
+import { formatGeminiError, makeInitialCouncilState, nowTime, sleep } from "./council/utils";
 
 export default function GeminiCouncil() {
   const envApiKey = import.meta.env.VITE_GEMINI_API_KEY?.trim() ?? "";
   const isFreeTier =
     (import.meta.env.VITE_FREE_TIER_GEMINI ?? import.meta.env.FREE_TIER_GEMINI) ===
     "true";
-  const DELAY_MS = 13000;
   const client = useMemo(
     () => (envApiKey ? new GoogleGenAI({ apiKey: envApiKey }) : null),
     [envApiKey]
@@ -244,21 +95,21 @@ export default function GeminiCouncil() {
       systemPrompt: string
     ): Promise<string> => {
       if (!isFreeTier) {
-        return callGemini(client, userPrompt, systemPrompt);
+        return callGemini(client, GEMINI_MODEL, userPrompt, systemPrompt);
       }
 
       if (lastFreeTierRequestCompletedAt > 0) {
         const elapsed = Date.now() - lastFreeTierRequestCompletedAt;
-        const waitMs = Math.max(0, DELAY_MS - elapsed);
+        const waitMs = Math.max(0, FREE_TIER_DELAY_MS - elapsed);
         if (waitMs > 0) {
           await sleep(waitMs);
         }
       }
 
       try {
-        return await callGemini(client, userPrompt, systemPrompt);
+        return await callGemini(client, GEMINI_MODEL, userPrompt, systemPrompt);
       } finally {
-        // Keep at least DELAY_MS between every free-tier API call.
+        // Keep at least FREE_TIER_DELAY_MS between every free-tier API call.
         lastFreeTierRequestCompletedAt = Date.now();
       }
     };
@@ -496,50 +347,17 @@ Synthesize the debate and provide a final nuanced answer.`;
             {messages
               .filter((message) => message.role === "user" || message.role === "synthesis")
               .map((message) => {
-              const isUser = message.role === "user";
-              const isTraceOpen = Boolean(openTraces[message.id]);
+                const isTraceOpen = Boolean(openTraces[message.id]);
 
-              return (
-                <article
-                  key={message.id}
-                  className={`gc-message ${isUser ? "is-user" : "is-assistant"}`}
-                >
-                  <div className="gc-message-head">
-                    <div className="gc-message-title-wrap">
-                      {!isUser && message.color && (
-                        <span
-                          className="gc-color-dot"
-                          style={{ backgroundColor: message.color }}
-                        />
-                      )}
-                      <span className="gc-message-title">{message.title}</span>
-                    </div>
-                    <time>{message.time}</time>
-                  </div>
-
-                  <div className="gc-message-body">
-                    <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                      {message.body}
-                    </ReactMarkdown>
-                  </div>
-
-                  {message.role === "synthesis" && message.trace && (
-                    <>
-                      <button
-                        type="button"
-                        className="gc-trace-toggle"
-                        onClick={() => toggleTrace(message.id)}
-                      >
-                        {isTraceOpen ? "Hide thinking" : "Thinking"}
-                      </button>
-                      {isTraceOpen && (
-                        <pre className="gc-trace-box gc-trace-highlight">{message.trace}</pre>
-                      )}
-                    </>
-                  )}
-                </article>
-              );
-            })}
+                return (
+                  <CouncilMessage
+                    key={message.id}
+                    message={message}
+                    isTraceOpen={isTraceOpen}
+                    onToggleTrace={toggleTrace}
+                  />
+                );
+              })}
 
             {running && showThinkingPanel && (
               <div className="gc-thinking-panel" aria-live="polite">
@@ -628,39 +446,13 @@ Synthesize the debate and provide a final nuanced answer.`;
                     .map((message) => {
                       const isTraceOpen = Boolean(openTraces[message.id]);
                       return (
-                        <article key={message.id} className="gc-message gc-message-detail">
-                          <div className="gc-message-head">
-                            <div className="gc-message-title-wrap">
-                              {message.color && (
-                                <span
-                                  className="gc-color-dot"
-                                  style={{ backgroundColor: message.color }}
-                                />
-                              )}
-                              <span className="gc-message-title">{message.title}</span>
-                            </div>
-                            <time>{message.time}</time>
-                          </div>
-                          <div className="gc-message-body">
-                            <ReactMarkdown remarkPlugins={[remarkGfm]}>
-                              {message.body}
-                            </ReactMarkdown>
-                          </div>
-                          {message.trace && (
-                            <>
-                              <button
-                                type="button"
-                                className="gc-trace-toggle"
-                                onClick={() => toggleTrace(message.id)}
-                              >
-                                {isTraceOpen ? "Hide thinking" : "Thinking"}
-                              </button>
-                              {isTraceOpen && (
-                                <pre className="gc-trace-box gc-trace-highlight">{message.trace}</pre>
-                              )}
-                            </>
-                          )}
-                        </article>
+                        <CouncilMessage
+                          key={message.id}
+                          message={message}
+                          isTraceOpen={isTraceOpen}
+                          onToggleTrace={toggleTrace}
+                          extraClassName="gc-message-detail"
+                        />
                       );
                     })}
                 </div>
@@ -685,8 +477,11 @@ Synthesize the debate and provide a final nuanced answer.`;
           </div>
         </section>
       </main>
-      <footer style={{ textAlign: 'center', padding: '24px', opacity: 0.4, fontSize: '15px' }}>
-        made with ♥ by <a href="https://github.com/itsagurin" target="_blank" rel="noreferrer" style={{ color: 'inherit' }}>itsagurin</a>
+      <footer className="gc-footer">
+        made with &lt;3 by{" "}
+        <a href="https://github.com/itsagurin" target="_blank" rel="noreferrer">
+          itsagurin
+        </a>
       </footer>
     </div>
   );

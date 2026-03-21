@@ -1,6 +1,6 @@
 # Gemini Council
 
-> 4 Gemini AI agents with distinct personas debate your question in real time — inspired by Andrej Karpathy's LLM Council concept.
+> 4 Gemini AI agents with distinct personas debate your question in real time.
 
 ## What it does
 
